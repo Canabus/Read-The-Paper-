@@ -1310,6 +1310,12 @@ table.oblig td,table.oblig th{border-top:1px solid var(--line);padding:8px 6px;t
     s = s.replace(/^\/+/, "");
     return s;
   }
+  function blobRequestPath(cacheKey) {
+    if (!cacheKey.startsWith("blobs/"))
+      return cacheKey;
+    const query = cacheKey.indexOf("?");
+    return query < 0 ? cacheKey : cacheKey.slice(0, query);
+  }
   function blobInner(base, NativeURL) {
     if (base == null)
       return null;
@@ -1940,7 +1946,7 @@ ${v}`;
                 blobStats.revoked++;
               } catch {}
             }
-          }).finally(() => {
+          }).catch(() => {}).finally(() => {
             blobStats.inFlightRevokes--;
           });
         }, __BLOB_REVOKE_DELAY_MS);
@@ -1966,12 +1972,19 @@ ${v}`;
         blobStats.hits++;
       } else {
         blobStats.misses++;
-        const url = httpReq("GET", key, null).then((r) => {
+        const url = httpReq("GET", blobRequestPath(key), null).then((r) => {
+          if (r.status < 200 || r.status >= 300) {
+            throw new Error(`Space resource returned HTTP ${r.status}`);
+          }
           const ctHeader = r.headers.find(([k]) => k.toLowerCase() === "content-type");
           const ct = ctHeader?.[1] ?? "application/octet-stream";
           const blob = new Blob([r.bytes], { type: ct });
           blobStats.created++;
           return URL.createObjectURL(blob);
+        }).catch((error) => {
+          if (blobCache.get(key) === ent)
+            blobCache.delete(key);
+          throw error;
         });
         ent = { url };
         blobCache.set(key, ent);
@@ -2085,6 +2098,10 @@ ${v}`;
           try {
             el.setAttribute("srcset", rebuilt.join(", "));
           } catch {}
+        }, () => {
+          try {
+            el.dispatchEvent(new Event("error"));
+          } catch {}
         });
         return;
       }
@@ -2116,8 +2133,9 @@ ${v}`;
             }
           } catch {}
         }, () => {
-          if (isMediaSource) {
+          if (isMediaSource)
             mediaSourceLoads.set(el, "settled");
+          if (isMediaSource || tag === "IMG") {
             el.dispatchEvent(new Event("error"));
           }
         });
@@ -3058,10 +3076,48 @@ function splitSentences(text) {
     return s.length > 12;
   });
 }
-function pageOf(text, needle, occ) {
-  if (!text || !needle) return 'page unavailable';
-  var flatText = text.replace(/\s+/g, ' ');
-  var flatNeedle = String(needle).replace(/\s+/g, ' ').trim();
+var RTP_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+var DATE_PATTERN_SRC = '(?:' + RTP_MONTHS.join('|') + ')\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4}|\\d{1,2}(?:st|nd|rd|th)?\\s+(?:' + RTP_MONTHS.join('|') + ')\\s+\\d{4}|\\b\\d{1,2}\\/\\d{1,2}\\/\\d{2,4}\\b';
+function makeDateRe(global) {
+  return new RegExp(DATE_PATTERN_SRC, global ? 'g' : '');
+}
+function parseDateText(raw) {
+  if (!raw) return null;
+  var txt = String(raw).trim();
+  var num = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/.exec(txt);
+  if (num) {
+    var a = parseInt(num[1], 10),
+      b = parseInt(num[2], 10),
+      y = parseInt(num[3], 10);
+    if (y < 100) y += 2000;
+    var us = new Date(y, a - 1, b);
+    if (!isNaN(us.getTime()) && us.getFullYear() === y && us.getMonth() === a - 1 && us.getDate() === b) return us;
+    if (a > 12 && b <= 12) {
+      var df = new Date(y, b - 1, a);
+      if (!isNaN(df.getTime()) && df.getFullYear() === y && df.getMonth() === b - 1 && df.getDate() === a) return df;
+    }
+    return null;
+  }
+  var clean = txt.replace(/(\d{1,2})(st|nd|rd|th)\b/gi, '$1');
+  var mm = /^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$/.exec(clean) || /^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$/.exec(clean);
+  if (mm) {
+    var nameFirst = isNaN(parseInt(mm[1], 10));
+    var monthName = nameFirst ? mm[1] : mm[2];
+    var dayNum = nameFirst ? parseInt(mm[2], 10) : parseInt(mm[1], 10);
+    var yearNum = parseInt(mm[3], 10);
+    var mi = -1;
+    for (var k = 0; k < RTP_MONTHS.length; k++) {
+      if (RTP_MONTHS[k].toLowerCase() === String(monthName).toLowerCase()) mi = k;
+    }
+    if (mi < 0) return null;
+    var md = new Date(yearNum, mi, dayNum);
+    return !isNaN(md.getTime()) && md.getMonth() === mi && md.getDate() === dayNum ? md : null;
+  }
+  var d = new Date(clean);
+  return isNaN(d.getTime()) ? null : d;
+}
+function findNeedleIndex(flatText, needle, occ) {
+  var flatNeedle = String(needle || '').replace(/\s+/g, ' ').trim();
   occ = occ || 0;
   var probes = [flatNeedle, flatNeedle.slice(0, 120), flatNeedle.slice(0, 60), flatNeedle.slice(0, 30)];
   var idx = -1;
@@ -3083,13 +3139,44 @@ function pageOf(text, needle, occ) {
     }).slice(0, 4).join(' ');
     if (words) idx = flatText.indexOf(words);
   }
-  if (idx < 0) return 'page unavailable';
-  var before = flatText.slice(0, idx);
-  var markers = before.match(/\[Page \d+\]/g);
-  if (!markers || !markers.length) return 'page unavailable';
+  return idx;
+}
+function segmentFor(flatText, idx) {
+  var seg = {
+    start: 0,
+    doc: null
+  };
+  var re = /\[Source: ([^\]]+)\]/g,
+    m;
+  while ((m = re.exec(flatText)) !== null) {
+    if (m.index > idx) break;
+    seg.doc = m[1];
+    seg.start = m.index + m[0].length;
+  }
+  return seg;
+}
+function pageOf(text, needle, occ) {
+  if (!text || !needle) return 'location not available';
+  var flatText = text.replace(/\s+/g, ' ');
+  var idx = findNeedleIndex(flatText, needle, occ);
+  if (idx < 0) return 'location not available';
+  var seg = segmentFor(flatText, idx);
+  var markers = flatText.slice(seg.start, idx).match(/\[Page \d+\]/g);
+  if (!markers || !markers.length) return 'location not available';
   var last = markers[markers.length - 1];
   var num = last.match(/\d+/);
-  return num ? 'p. ' + num[0] : 'page unavailable';
+  return num ? 'p. ' + num[0] : 'location not available';
+}
+function docOf(text, needle, occ) {
+  if (!text || !needle) return null;
+  var flatText = text.replace(/\s+/g, ' ');
+  var idx = findNeedleIndex(flatText, needle, occ);
+  if (idx < 0) return null;
+  return segmentFor(flatText, idx).doc;
+}
+function fromPhrase(text, needle, occ) {
+  var d = docOf(text, needle, occ);
+  return d ? 'from ' + d : 'from your document';
 }
 var _occCache = {};
 function resetOcc() {
@@ -3289,7 +3376,7 @@ function buildInstrumentCheck(text, sentences, defs) {
     month: 'long',
     day: 'numeric'
   });
-  var passagePage = exactPassage ? pageOf(text, exactPassage, occFor(exactPassage)) : 'page unavailable';
+  var passagePage = exactPassage ? pageOf(text, exactPassage, occFor(exactPassage)) : 'location not available';
   LAST_CLAIM_RECORD = {
     instrument_type: instrumentType,
     acceptance_invoked: acceptanceInvoked,
@@ -3302,10 +3389,10 @@ function buildInstrumentCheck(text, sentences, defs) {
     date_checked: dateChecked
   };
   var h = '';
-  h += '<div class="card"><h3>1 · Instrument classification \u2014 ' + esc(instrumentType.replace('_', ' ')) + ' <span class="badge ' + (status === 'verified' ? 'verified' : 'notest') + '">' + esc(statusLabel) + '</span></h3>' + '<p style="margin:0 0 6px;color:var(--muted)">' + esc(governingDef) + '</p>' + (exactPassage ? '<blockquote>' + esc(exactPassage) + '<span class="pg">' + esc(passagePage) + ' \u00b7 from your document \u00b7 pin cite: ' + esc(pinCite) + '</span></blockquote>' : '<p style="margin:0" class="notin">Exact passage: not found in the text provided \u2014 no promise or order language was detected to quote. Pin cite for the governing definition: ' + esc(pinCite) + '.</p>') + (instrumentType === 'other' && orderSents.length ? '<blockquote>' + esc(orderSents[0]) + '<span class="pg">' + esc(pageOf(text, orderSents[0], occFor(orderSents[0]))) + ' \u00b7 order language also found \u00b7 from your document</span></blockquote>' : '');
+  h += '<div class="card"><h3>1 · Instrument classification \u2014 ' + esc(instrumentType.replace('_', ' ')) + ' <span class="badge ' + (status === 'verified' ? 'verified' : 'notest') + '">' + esc(statusLabel) + '</span></h3>' + '<p style="margin:0 0 6px;color:var(--muted)">' + esc(governingDef) + '</p>' + (exactPassage ? '<blockquote>' + esc(exactPassage) + '<span class="pg">' + esc(passagePage) + ' \u00b7 ' + esc(fromPhrase(text, exactPassage, occFor(exactPassage))) + ' \u00b7 pin cite: ' + esc(pinCite) + '</span></blockquote>' : '<p style="margin:0" class="notin">Exact passage: not found in the text provided \u2014 no promise or order language was detected to quote. Pin cite for the governing definition: ' + esc(pinCite) + '.</p>') + (instrumentType === 'other' && orderSents.length ? '<blockquote>' + esc(orderSents[0]) + '<span class="pg">' + esc(pageOf(text, orderSents[0], occFor(orderSents[0]))) + ' \u00b7 order language also found \u00b7 ' + esc(fromPhrase(text, orderSents[0], occFor(orderSents[0]))) + '</span></blockquote>' : '');
   if (acceptanceInvoked) {
     h += '<div class="inst-banner" role="alert"><b>Acceptance check \u2014 forced because acceptance language appears in this document or the claim pasted with it:</b> \u201cAcceptance under \u00a7 3-409 applies only to drafts. This instrument is classified as: ' + esc(instrumentType.replace('_', ' ')) + '. \u201d</div>';
-    if (acceptanceSent) h += '<blockquote>' + esc(acceptanceSent) + '<span class="pg">' + esc(pageOf(text, acceptanceSent, occFor(acceptanceSent))) + ' \u00b7 the acceptance language, from your document</span></blockquote>';
+    if (acceptanceSent) h += '<blockquote>' + esc(acceptanceSent) + '<span class="pg">' + esc(pageOf(text, acceptanceSent, occFor(acceptanceSent))) + ' \u00b7 the acceptance language, ' + esc(fromPhrase(text, acceptanceSent, occFor(acceptanceSent))) + '</span></blockquote>';
     if (categoryError || status === 'application_not_established') {
       h += '<div class="inst-banner danger" role="alert"><b>Category error flagged \u2014 status set to Application not established.</b><br>' + esc('Acceptance is defined in UCC \u00a7 3-409 as the drawee\u2019s signed agreement to pay a ') + ' <i>draft</i>' + esc('. A note is a promise, not an order. No acceptance occurs on a note under Article 3.') + '</div>';
     }
@@ -3313,7 +3400,7 @@ function buildInstrumentCheck(text, sentences, defs) {
   var row = function (k, v) {
     return '<div class="kv"><div class="k">' + esc(k) + '</div><div class="v">' + v + '</div></div>';
   };
-  h += '<h4 style="margin:16px 0 2px">Claim record \u2014 required fields, never optional</h4><div class="grid5">' + row('exact_passage + pin cite + page', exactPassage ? '\u201c' + esc(exactPassage) + '\u201d \u00b7 ' + esc(pinCite) + ' \u00b7 ' + esc(passagePage) : 'Not found in the text provided \u00b7 ' + esc(pinCite) + ' \u00b7 page unavailable (never guessed)') + row('instrument_type', '<b>' + esc(instrumentType) + '</b> <span style="color:var(--muted)">(note | draft | other | not_established)</span>') + row('acceptance_invoked', '<b>' + (acceptanceInvoked ? 'true' : 'false') + '</b>' + (acceptanceInvoked ? ' <span style="color:var(--muted)">\u2014 \u201caccepted / acceptance / acceptor\u201d language appears in the document or the claim pasted with it</span>' : '')) + row('is_draft', '<b>' + esc(String(isDraft)) + '</b>') + row('status', '<b>' + esc(status) + '</b> <span style="color:var(--muted)">(verified | contradicted by specified evidence | application_not_established | gap)</span>') + (status === 'application_not_established' || status === 'gap' ? row('what_would_establish \u2014 mandatory at this status', esc(whatWouldEstablish)) : row('what_would_establish', '<span style="color:var(--muted)">Not required at a Verified status \u2014 the exact passage above is the evidence.</span>')) + row('date_checked + archive capture', esc(dateChecked) + ' (the day this reading ran) \u00b7 Archive capture: <b>not captured by this app</b> \u2014 it runs in your browser and cannot save pages to archive.org for you. To complete this field: run web.archive.org \u201cSave Page Now\u201d on the source the day you cite it and keep the capture URL with this record; the downloaded case file is your on-device copy.') + '</div></div>';
+  h += '<h4 style="margin:16px 0 2px">Claim record \u2014 required fields, never optional</h4><div class="grid5">' + row('exact_passage + pin cite + page', exactPassage ? '\u201c' + esc(exactPassage) + '\u201d \u00b7 ' + esc(pinCite) + ' \u00b7 ' + esc(passagePage) : 'Not found in the text provided \u00b7 ' + esc(pinCite) + ' \u00b7 location not available (never guessed)') + row('instrument_type', '<b>' + esc(instrumentType) + '</b> <span style="color:var(--muted)">(note | draft | other | not_established)</span>') + row('acceptance_invoked', '<b>' + (acceptanceInvoked ? 'true' : 'false') + '</b>' + (acceptanceInvoked ? ' <span style="color:var(--muted)">\u2014 \u201caccepted / acceptance / acceptor\u201d language appears in the document or the claim pasted with it</span>' : '')) + row('is_draft', '<b>' + esc(String(isDraft)) + '</b>') + row('status', '<b>' + esc(status) + '</b> <span style="color:var(--muted)">(verified | contradicted by specified evidence | application_not_established | gap)</span>') + (status === 'application_not_established' || status === 'gap' ? row('what_would_establish \u2014 mandatory at this status', esc(whatWouldEstablish)) : row('what_would_establish', '<span style="color:var(--muted)">Not required at a Verified status \u2014 the exact passage above is the evidence.</span>')) + row('date_checked + archive capture', esc(dateChecked) + ' (the day this reading ran) \u00b7 Archive capture: <b>not captured by this app</b> \u2014 it runs in your browser and cannot save pages to archive.org for you. To complete this field: run web.archive.org \u201cSave Page Now\u201d on the source the day you cite it and keep the capture URL with this record; the downloaded case file is your on-device copy.') + '</div></div>';
   var parties = extractParties(text, sentences, extractDefsList(text));
   var capSents = sentences.filter(function (s) {
     return /as (trustee|agent|attorney|officer|executor|administrator)\b|in (his|her|their|its) capacity|on behalf of|signed individually|personally liable/i.test(s);
@@ -3321,7 +3408,7 @@ function buildInstrumentCheck(text, sentences, defs) {
   h += '<div class="card"><h3>2 · Parties and capacity</h3>' + (parties.length ? '<ul style="margin:0;padding-left:18px">' + parties.map(function (p) {
     return '<li style="margin:6px 0"><b>' + esc(p.name) + '</b> \u2014 ' + esc(p.role) + (p.quote ? '<br><span style="color:var(--muted)">\u201c' + esc(p.quote.length > 200 ? p.quote.slice(0, 200) + '\u2026' : p.quote) + '\u201d</span>' : '') + '</li>';
   }).join('') + '</ul>' : '<p style="margin:0;color:var(--muted)">No party names were extracted automatically. Check the first page and the signature block of the original \u2014 nothing is guessed here.</p>') + (capSents.length ? capSents.map(function (s) {
-    return '<blockquote style="font-size:15.5px">' + esc(s) + '<span class="pg">' + esc(pageOf(text, s, occFor(s))) + ' \u00b7 capacity language \u00b7 from your document</span></blockquote>';
+    return '<blockquote style="font-size:15.5px">' + esc(s) + '<span class="pg">' + esc(pageOf(text, s, occFor(s))) + ' \u00b7 capacity language \u00b7 ' + esc(fromPhrase(text, s, occFor(s))) + '</span></blockquote>';
   }).join('') : '<p style="margin:8px 0 0;color:var(--muted)">Capacity: no representative-capacity wording (\u201cas trustee,\u201d \u201con behalf of,\u201d \u201cindividually\u201d) was detected. Check the signature block: \u201cperson\u201d includes individuals (UCC \u00a7 1-201(b)(27); 26 U.S.C. \u00a7 7701(a)(1)) \u2014 the live question is capacity, whether a signer signed as a natural person or as a representative.</p>') + '</div>';
   h += '<div class="card"><h3>3 · Definitions that re-define ordinary words</h3>' + (defs && defs.length ? '<ul style="margin:0;padding-left:18px">' + defs.map(function (d) {
     return '<li style="margin:6px 0"><b>\u201c' + esc(d.term) + '\u201d</b> = ' + esc(d.body.charAt(0).toLowerCase() + d.body.slice(1)) + ' <span style="color:var(--muted)">\u2014 full quotes and pages in Section 1 below.</span></li>';
@@ -3348,7 +3435,7 @@ function buildInstrumentCheck(text, sentences, defs) {
   };
   var quoteList = function (list) {
     return list.slice(0, 3).map(function (s) {
-      return '<blockquote style="font-size:15.5px">' + esc(s) + '<span class="pg">' + esc(pageOf(text, s, occFor(s))) + ' \u00b7 verbatim \u00b7 from your document</span></blockquote>';
+      return '<blockquote style="font-size:15.5px">' + esc(s) + '<span class="pg">' + esc(pageOf(text, s, occFor(s))) + ' \u00b7 verbatim \u00b7 ' + esc(fromPhrase(text, s, occFor(s))) + '</span></blockquote>';
     }).join('');
   };
   h += '<div class="card"><h3>4 · Discharge / limitation / lost-instrument findings</h3>' + '<p style="margin:0 0 6px;color:var(--muted);font-size:14px">Only the mechanisms actually present in this document are analyzed. Findings are the document\u2019s own sentences, quoted verbatim; the box under each one states the governing limit from the statute \u2014 it is not a finding about your document. Discharge under \u00a7 3-601 is party-specific: a discharged party is out, and the instrument can still be enforced against others.</p>';
@@ -3366,7 +3453,7 @@ function buildInstrumentCheck(text, sentences, defs) {
   }
   if (limitationsPresent) {
     var period = instrumentType === 'note' ? demandSent ? 'Demand note: 6 years after demand; if no demand is made, barred after 10 continuous years with no payment of principal or interest (\u00a7 3-118(b)).' : 'Note payable at a definite time: 6 years after the due date (or the accelerated due date, if accelerated) (\u00a7 3-118(a)).' : instrumentType === 'draft' ? 'Unaccepted draft: 3 years after dishonor or 10 years after the date of the draft, whichever expires first; an accepted draft (other than a certified check) is generally 6 years (\u00a7 3-118(c)).' : 'Note at a definite time: 6 years after the due date. Demand note: 6 years after demand (10 continuous years with no payment and no demand bars it). Unaccepted draft: 3 years after dishonor or 10 years after its date, whichever expires first (\u00a7 3-118). Which period applies follows the classification in part 1.';
-    h += '<h4 style="margin:14px 0 2px">Limitations \u2014 \u00a7 3-118</h4>' + (dueSent ? '<blockquote style="font-size:15.5px">' + esc(dueSent) + '<span class="pg">' + esc(pageOf(text, dueSent, occFor(dueSent))) + ' \u00b7 verbatim \u00b7 from your document</span></blockquote>' : '') + (demandSent && demandSent !== dueSent ? '<blockquote style="font-size:15.5px">' + esc(demandSent) + '<span class="pg">' + esc(pageOf(text, demandSent, occFor(demandSent))) + ' \u00b7 verbatim \u00b7 from your document</span></blockquote>' : '') + '<div class="ledger-note" style="text-align:left"><b>Applicable period surfaced from \u00a7 3-118:</b> ' + esc(period) + ' Time is itself a discharge route \u2014 but this reader surfaces the period only. When your clock started depends on the due date or demand date in the document and your state\u2019s enacted \u00a7 3-118; that start date is not decided here.</div>';
+    h += '<h4 style="margin:14px 0 2px">Limitations \u2014 \u00a7 3-118</h4>' + (dueSent ? '<blockquote style="font-size:15.5px">' + esc(dueSent) + '<span class="pg">' + esc(pageOf(text, dueSent, occFor(dueSent))) + ' \u00b7 verbatim \u00b7 ' + esc(fromPhrase(text, dueSent, occFor(dueSent))) + '</span></blockquote>' : '') + (demandSent && demandSent !== dueSent ? '<blockquote style="font-size:15.5px">' + esc(demandSent) + '<span class="pg">' + esc(pageOf(text, demandSent, occFor(demandSent))) + ' \u00b7 verbatim \u00b7 ' + esc(fromPhrase(text, demandSent, occFor(demandSent))) + '</span></blockquote>' : '') + '<div class="ledger-note" style="text-align:left"><b>Applicable period surfaced from \u00a7 3-118:</b> ' + esc(period) + ' Time is itself a discharge route \u2014 but this reader surfaces the period only. When your clock started depends on the due date or demand date in the document and your state\u2019s enacted \u00a7 3-118; that start date is not decided here.</div>';
   }
   if (lostSents.length) {
     var e1 = /entitled to enforce|was entitled|acquired (ownership|the instrument) from/i.test(text);
@@ -3443,7 +3530,7 @@ function analyze(rawText, title) {
   }
   __tunnel.setInnerHTML($('defsOut'), defs.length ? defs.map(function (d) {
     var trap = /(any|all|including|not listed|whether or not|good faith|determination|may impose)/.test(normMatch(d.body));
-    return '<div class="card"><h3>“' + esc(d.term) + '” ' + (trap ? '<span class="badge notest">Broad wording — worth checking</span>' : '') + '</h3><blockquote>' + esc(d.quote) + '<span class="pg">' + esc(pageOf(text, d.quote, occFor(d.quote))) + ' · from your document</span></blockquote><p style="margin:0;color:var(--muted)">In plain English: in <i>this</i> document, “' + esc(d.term) + '” = ' + esc(d.body.charAt(0).toLowerCase() + d.body.slice(1)) + '.</p></div>';
+    return '<div class="card"><h3>“' + esc(d.term) + '” ' + (trap ? '<span class="badge notest">Broad wording — worth checking</span>' : '') + '</h3><blockquote>' + esc(d.quote) + '<span class="pg">' + esc(pageOf(text, d.quote, occFor(d.quote))) + ' · ' + esc(fromPhrase(text, d.quote, occFor(d.quote))) + '</span></blockquote><p style="margin:0;color:var(--muted)">In plain English: in <i>this</i> document, “' + esc(d.term) + '” = ' + esc(d.body.charAt(0).toLowerCase() + d.body.slice(1)) + '.</p></div>';
   }).join('') : '<div class="empty">No re-defined terms found in the text provided. Either this document uses words in their ordinary sense — or the Definitions section wasn\u2019t included in what you pasted. If the document has one, paste it: it changes the meaning of everything else.</div>', "innerHTML");
   buildInstrumentCheck(text, sentences, defs);
   var asks = [];
@@ -3482,7 +3569,7 @@ function analyze(rawText, title) {
     });
   });
   __tunnel.setInnerHTML($('hitsOut'), hits.length ? '<p style="margin:0 0 10px;color:var(--muted);font-size:14px">Showing all ' + hits.length + ' passage' + (hits.length === 1 ? '' : 's') + ' to inspect.</p>' + hits.map(function (h) {
-    return '<div class="card"><div class="hit"><div class="icon" aria-hidden="true">!</div><div><span class="sev ' + h.stance.key + '">' + esc(h.stance.key === 'excludes' ? 'Passage to inspect' : h.r.sev === 'high' ? 'High impact' : h.r.sev === 'med' ? 'Costs money / rights' : 'Note') + ' · ' + esc(h.r.label) + '</span><br><span class="stance">' + esc(h.stance.label) + '</span><blockquote style="margin-top:8px">' + esc(h.s) + '<span class="pg">' + esc(h.page || pageOf(text, h.s, h.occ)) + ' · from your document</span></blockquote><p style="margin:0;color:var(--muted)">' + esc(h.r.why) + ' Stance above is read from the clause about this topic — imposes, excludes, limits, or discusses — not from unrelated words elsewhere in the sentence. Still read the full sentence in context before relying on it.</p></div></div></div>';
+    return '<div class="card"><div class="hit"><div class="icon" aria-hidden="true">!</div><div><span class="sev ' + h.stance.key + '">' + esc(h.stance.key === 'excludes' ? 'Passage to inspect' : h.r.sev === 'high' ? 'High impact' : h.r.sev === 'med' ? 'Costs money / rights' : 'Note') + ' · ' + esc(h.r.label) + '</span><br><span class="stance">' + esc(h.stance.label) + '</span><blockquote style="margin-top:8px">' + esc(h.s) + '<span class="pg">' + esc(h.page || pageOf(text, h.s, h.occ)) + ' · ' + esc(fromPhrase(text, h.s, h.occ)) + '</span></blockquote><p style="margin:0;color:var(--muted)">' + esc(h.r.why) + ' Stance above is read from the clause about this topic — imposes, excludes, limits, or discusses — not from unrelated words elsewhere in the sentence. Still read the full sentence in context before relying on it.</p></div></div></div>';
   }).join('') : '<div class="empty">No passages to inspect for arbitration, auto-renewal, variable rates, penalties, waivers, acceleration, or incorporation-by-reference in the text provided. “None found” means none in <i>what you pasted</i> — not a promise about pages you didn\u2019t include.</div>', "innerHTML");
   var you = [],
     them = [];
@@ -3540,7 +3627,7 @@ function analyze(rawText, title) {
     return (sevRank[a.r.sev] || 2) - (sevRank[b.r.sev] || 2);
   }).slice(0, 3);
   __tunnel.setInnerHTML($('topFindings'), topHits.length ? '<div class="card" style="border:1.5px solid var(--amber)"><h3>Start here — the ' + topHits.length + ' passages that matter most</h3>' + topHits.map(function (x) {
-    return '<p style="margin:6px 0"><b>' + esc(x.r.label) + '.</b> <span style="color:var(--muted)">' + esc(x.stance.label) + '.</span></p><blockquote style="font-size:15.5px;margin:6px 0">' + esc(x.s) + '<span class="pg">' + esc(x.page || pageOf(text, x.s, x.occ)) + ' · from your document</span></blockquote>';
+    return '<p style="margin:6px 0"><b>' + esc(x.r.label) + '.</b> <span style="color:var(--muted)">' + esc(x.stance.label) + '.</span></p><blockquote style="font-size:15.5px;margin:6px 0">' + esc(x.s) + '<span class="pg">' + esc(x.page || pageOf(text, x.s, x.occ)) + ' · ' + esc(fromPhrase(text, x.s, x.occ)) + '</span></blockquote>';
   }).join('') + '<p style="margin:6px 0 0;color:var(--muted);font-size:13.5px">Everything found is still shown in full below — this is a starting point, not a filter.</p></div>' : '', "innerHTML");
   var glanceAmt = null,
     glanceAmtLabel = 'Total amount due';
@@ -3564,10 +3651,10 @@ function analyze(rawText, title) {
   var glanceDate = null,
     gDates = [],
     gdm;
-  var gDateRe = /(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}|\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/g;
+  var gDateRe = makeDateRe(true);
   while ((gdm = gDateRe.exec(text)) !== null) {
-    var gd = new Date(gdm[0]);
-    if (!isNaN(gd.getTime())) gDates.push({
+    var gd = parseDateText(gdm[0]);
+    if (gd) gDates.push({
       d: gd,
       label: gdm[0]
     });
@@ -3638,7 +3725,7 @@ function analyze(rawText, title) {
   });
   fingerprintReading(text);
   var totalShown = defs.length + asks.length + hits.length + you.length + them.length;
-  __tunnel.setInnerHTML($('checkOut'), '<b>' + totalShown + ' passages found and shown above</b> — ' + defs.length + ' re-defined term' + (defs.length === 1 ? '' : 's') + ', ' + asks.length + ' money / deadline / authorization passage' + (asks.length === 1 ? '' : 's') + ', ' + hits.length + ' passage' + (hits.length === 1 ? '' : 's') + ' to inspect, and ' + (you.length + them.length) + ' ledger passage' + (you.length + them.length === 1 ? '' : 's') + '. All results found are shown — nothing is capped or quietly hidden. Source: “' + esc(title || 'Pasted / uploaded text') + '” · ' + text.length.toLocaleString() + ' characters read. Page numbers come from the PDF page markers stored during extraction; when a location cannot be determined it says <b>page unavailable</b> — a page number is never guessed. Anything not found is reported as not found, never filled in.', "innerHTML");
+  __tunnel.setInnerHTML($('checkOut'), '<b>' + totalShown + ' passages found and shown above</b> — ' + defs.length + ' re-defined term' + (defs.length === 1 ? '' : 's') + ', ' + asks.length + ' money / deadline / authorization passage' + (asks.length === 1 ? '' : 's') + ', ' + hits.length + ' passage' + (hits.length === 1 ? '' : 's') + ' to inspect, and ' + (you.length + them.length) + ' ledger passage' + (you.length + them.length === 1 ? '' : 's') + '. All results found are shown — nothing is capped or quietly hidden. Source: “' + esc(title || 'Pasted / uploaded text') + '” · ' + text.length.toLocaleString() + ' characters read. Page numbers come from the PDF page markers stored during extraction; when a location cannot be determined it says <b>location not available</b> — a page number is never guessed. Anything not found is reported as not found, never filled in.', "innerHTML");
   $('resultMeta').textContent = 'Reading: ' + (title || 'your document') + ' · ' + sentences.length + ' sentences scanned · definitions, footnotes & cross-references included where present in the text provided.';
   var trEl = $('trustResults');
   if (trEl) __tunnel.setStyle(trEl, "display", 'none');
@@ -3878,9 +3965,12 @@ function renderExtraAnalysis(text, sentences) {
   });
   var powerSents = sentences.filter(function (s) {
     var sn = normMatch(s);
-    return powerPhrases.some(function (ph) {
+    var hitsFound = powerPhrases.filter(function (ph) {
       return sn.indexOf(normMatch(ph)) >= 0;
     });
+    if (!hitsFound.length) return false;
+    if (hitsFound.length === 1 && normMatch(hitsFound[0]) === 'at any time' && (/(you|borrower|tenant|customer|member)[^.]{0,50}(cancel|terminate|close|end)/i.test(s) || /(cancel|terminate|close)[^.]{0,40}at any time/i.test(s))) return false;
+    return true;
   }).length;
   LAST_POWER_SENTS = powerSents;
   __tunnel.setInnerHTML($('powerOut'), '<div class="card"><h3>Language to inspect: ' + powerSents + ' passage' + (powerSents === 1 ? '' : 's') + '</h3><p style="margin:0;color:var(--muted);font-size:14.5px">' + powerSents + ' passage' + (powerSents === 1 ? '' : 's') + ' involving discretion, waivers, changes, or enforcement — review them in the passages below. That is a count of passages containing this kind of language (' + pcount + ' phrase match' + (pcount === 1 ? '' : 'es') + ' in total' + (phit.length ? ': ' + esc(phit.join(' · ')) : '') + '), not a rating of the document — the quotes below are the evidence, and what they mean is in their own words.</p></div>', "innerHTML");
@@ -3892,7 +3982,7 @@ function renderExtraAnalysis(text, sentences) {
     var refName = m ? m[0] : 'a referenced document';
     var attached = new RegExp(refName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
     var mentions = (text.match(attached) || []).length;
-    return '<blockquote style="font-size:15.5px">' + esc(s) + '<span class="pg">' + esc(pageOf(text, s, occFor(s))) + ' · from your document</span></blockquote><p style="margin:0 0 8px;color:var(--muted)">“' + esc(refName) + '” is mentioned ' + mentions + ' time' + (mentions === 1 ? '' : 's') + ' in what you provided. ' + (mentions > 1 ? 'Its contents may be included — check.' : 'Only the reference itself was detected — if the referenced text is not in what you uploaded, you have not read the whole deal.') + '</p>';
+    return '<blockquote style="font-size:15.5px">' + esc(s) + '<span class="pg">' + esc(pageOf(text, s, occFor(s))) + ' · ' + esc(fromPhrase(text, s, occFor(s))) + '</span></blockquote><p style="margin:0 0 8px;color:var(--muted)">“' + esc(refName) + '” is mentioned ' + mentions + ' time' + (mentions === 1 ? '' : 's') + ' in what you provided. ' + (mentions > 1 ? 'Its contents may be included — check.' : 'Only the reference itself was detected — if the referenced text is not in what you uploaded, you have not read the whole deal.') + '</p>';
   }).join('') : '<p style="margin:0;color:var(--muted)">No cross-references to exhibits, schedules, or outside documents were detected in what you provided.</p>') + '</div>', "innerHTML");
   var blanks = (text.match(/_{3,}|\bTBD\b|\bN\/A\b\s*:|\[\s*\]|\(\s*blank\s*\)/gi) || []).length;
   __tunnel.setInnerHTML($('blankOut'), '<div class="card"><h3>Blank &amp; unfinished fields</h3><p style="margin:0">' + (blanks ? '<b>' + blanks + ' blank or placeholder spot' + (blanks === 1 ? '' : 's') + '</b> detected (underscores, TBD, empty brackets). Unfilled fields are where disputes come from — check each one in the original before signing anything.' : '<span style="color:var(--muted)">No blank fields, underscores, or TBD placeholders were detected in what you provided.</span>') + '</p></div>', "innerHTML");
@@ -3901,11 +3991,11 @@ function renderExtraAnalysis(text, sentences) {
     return /(shall|must|required to|agrees? to)/i.test(s) && /(\$\s?[\d,]+|\d+\s?(days|months|years)|due|pay|deliver|provide|notice|respond)/i.test(s);
   });
   var oblig = obligAll.slice(0, 20);
-  var dateRe = /(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}|\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/g,
+  var dateRe = makeDateRe(true),
     dm;
   while ((dm = dateRe.exec(text)) !== null) {
-    var d = new Date(dm[0]);
-    if (isNaN(d.getTime())) continue;
+    var d = parseDateText(dm[0]);
+    if (!d) continue;
     var srcSent = '';
     for (var si = 0; si < sentences.length; si++) {
       if (sentences[si].indexOf(dm[0]) >= 0) {
@@ -3941,21 +4031,34 @@ function downloadIcs() {
     toast('No dates were detected to put in a calendar file.');
     return;
   }
-  var chosen = [];
+  var chosen = [],
+    ticked = 0,
+    skippedNot = 0;
   document.querySelectorAll('.date-confirm').forEach(function (cb) {
     if (!cb.checked) return;
+    ticked++;
     var i = parseInt(cb.getAttribute('data-di'), 10);
     var sel = document.querySelector('.date-meaning[data-di="' + i + '"]');
     var x = LAST_DEADLINES[i];
     if (!x) return;
+    if (sel && sel.value === 'not') {
+      skippedNot++;
+      return;
+    }
     var mLabel = sel ? sel.options[sel.selectedIndex].text : 'Date';
     chosen.push({
       date: x.date,
       label: x.label,
-      meaning: mLabel
+      meaning: mLabel,
+      meaningVal: sel ? sel.value : '',
+      sentence: x.sentence || ''
     });
   });
   if (!chosen.length) {
+    if (ticked && skippedNot === ticked) {
+      toast('The ticked dates were marked "Not a deadline / not established", so no calendar file was made.');
+      return;
+    }
     toast('No dates are ticked — tick the dates you want as reminders first. Nothing was exported.');
     return;
   }
@@ -3965,8 +4068,18 @@ function downloadIcs() {
   var fmt = function (d) {
     return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate());
   };
-  var ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Read the Paper//Confirmed reminders//EN\r\n' + chosen.map(function (x, i) {
-    return 'BEGIN:VEVENT\r\nUID:rtp-' + fmt(x.date) + '-' + i + '@readthepaper\r\nDTSTART;VALUE=DATE:' + fmt(x.date) + '\r\nSUMMARY:' + ('Reminder you confirmed — ' + x.meaning + ' (' + x.label + ') — date detected in your document; check the document for what is due').replace(/,/g, '') + '\r\nEND:VEVENT\r\n';
+  var nowUtc = new Date();
+  var dtstamp = nowUtc.getUTCFullYear() + pad(nowUtc.getUTCMonth() + 1) + pad(nowUtc.getUTCDate()) + 'T' + pad(nowUtc.getUTCHours()) + pad(nowUtc.getUTCMinutes()) + pad(nowUtc.getUTCSeconds()) + 'Z';
+  var uidHash = function (s) {
+    var h = 5381;
+    for (var ci = 0; ci < s.length; ci++) {
+      h = (h << 5) + h + s.charCodeAt(ci) >>> 0;
+    }
+    return ('0000000' + h.toString(16)).slice(-8);
+  };
+  var ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Read the Paper//Confirmed reminders//EN\r\n' + chosen.map(function (x) {
+    var uid = 'rtp-' + uidHash(fmt(x.date) + '|' + x.label + '|' + x.meaningVal + '|' + x.sentence) + '@readthepaper';
+    return 'BEGIN:VEVENT\r\nUID:' + uid + '\r\nDTSTAMP:' + dtstamp + '\r\nDTSTART;VALUE=DATE:' + fmt(x.date) + '\r\nSUMMARY:' + ('Reminder you confirmed — ' + x.meaning + ' (' + x.label + ') — date detected in your document; check the document for what is due').replace(/,/g, '') + '\r\nEND:VEVENT\r\n';
   }).join('') + 'END:VCALENDAR\r\n';
   var blob = new Blob([ics], {
     type: 'text/calendar'
@@ -3980,16 +4093,19 @@ function downloadIcs() {
   setTimeout(function () {
     URL.revokeObjectURL(a.href);
   }, 800);
-  toast('Calendar file downloaded with ' + chosen.length + ' confirmed reminder' + (chosen.length === 1 ? '' : 's') + ' — import it into your calendar app.');
+  toast('Calendar file downloaded with ' + chosen.length + ' confirmed reminder' + (chosen.length === 1 ? '' : 's') + ' — import it into your calendar app.' + (skippedNot ? ' ' + skippedNot + ' ticked date' + (skippedNot === 1 ? '' : 's') + ' marked not-a-deadline ' + (skippedNot === 1 ? 'was' : 'were') + ' left out.' : ''));
 }
 function fingerprintReading(text) {
   var el = $('resultMeta');
   if (!el) return;
   var when = new Date().toLocaleString();
   var fileLine = '';
-  if (FILE_HASHES.length) {
-    fileLine = ' · File fingerprint (SHA-256 of the file bytes, first 16): ' + FILE_HASHES.map(function (fh) {
-      return fh.hex.slice(0, 16);
+  var hashedFiles = FILE_HASHES.filter(function (fh) {
+    return fh.hex;
+  });
+  if (hashedFiles.length) {
+    fileLine = ' · File fingerprint (SHA-256 of the file bytes, first 16): ' + hashedFiles.map(function (fh) {
+      return fh.name + ' ' + fh.hex.slice(0, 16);
     }).join(', ') + ' — if the file itself changes, this changes. A different scan of the same page is a different file, so it gets a different file fingerprint even when the words read the same.';
   }
   if (window.crypto && crypto.subtle && crypto.subtle.digest) {
@@ -4019,7 +4135,7 @@ function trustQuoteCard(label, plain, quotes, text) {
   }
   var h = '<div class="card"><h3>' + esc(label) + '</h3><p style="margin:0 0 6px;color:var(--muted)">' + esc(plain) + '</p>';
   quotes.slice(0, 4).forEach(function (q) {
-    h += '<blockquote>' + esc(q) + '<span class="pg">' + esc(pageOf(text, q, occFor(q))) + ' · from your document</span></blockquote>';
+    h += '<blockquote>' + esc(q) + '<span class="pg">' + esc(pageOf(text, q, occFor(q))) + ' · ' + esc(fromPhrase(text, q, occFor(q))) + '</span></blockquote>';
   });
   if (quotes.length > 4) h += '<p style="margin:6px 0 0;color:var(--muted);font-size:13.5px">+ ' + (quotes.length - 4) + ' more passage' + (quotes.length - 4 === 1 ? '' : 's') + ' on this point in the text — all were scanned; the clearest are shown.</p>';
   h += '</div>';
@@ -4059,9 +4175,9 @@ function analyzeTrust(rawText, title) {
   var typeHtml = '';
   if (revocableQ.length && irrevocableQ.length) {
     typeHtml += '<div class="card"><h3>Revocable and irrevocable both appear</h3><p style="margin:0 0 6px;color:var(--muted)">This document uses both words — commonly revocable during the settlor\u2019s life and irrevocable after death, but read the quotes: the document decides, not the label.</p>' + revocableQ.slice(0, 2).map(function (q) {
-      return '<blockquote>' + esc(q) + '<span class="pg">' + esc(pageOf(text, q, occFor(q))) + ' · from your document</span></blockquote>';
+      return '<blockquote>' + esc(q) + '<span class="pg">' + esc(pageOf(text, q, occFor(q))) + ' · ' + esc(fromPhrase(text, q, occFor(q))) + '</span></blockquote>';
     }).join('') + irrevocableQ.slice(0, 2).map(function (q) {
-      return '<blockquote>' + esc(q) + '<span class="pg">' + esc(pageOf(text, q, occFor(q))) + ' · from your document</span></blockquote>';
+      return '<blockquote>' + esc(q) + '<span class="pg">' + esc(pageOf(text, q, occFor(q))) + ' · ' + esc(fromPhrase(text, q, occFor(q))) + '</span></blockquote>';
     }).join('') + '</div>';
   } else if (revocableQ.length) {
     typeHtml += trustQuoteCard('Revocable', 'The document calls this trust revocable — it can be changed or revoked as the document describes. This reading does not say whether a revocation would be effective; it only reports the wording.', revocableQ.slice(0, 3), text);
@@ -4146,7 +4262,7 @@ function analyzeTrust(rawText, title) {
     return '<li style="margin:8px 0"><b>' + esc(g.label) + '.</b> <span class="gap-state ' + (g.wording ? 'wording' : 'missing') + '">' + (g.wording ? 'Wording detected — detail not extracted' : 'Not detected automatically') + '</span><br><span style="color:var(--muted)">' + esc(g.why) + '</span></li>';
   }).join('') + '</ul></div>' : '<div class="card"><p style="margin:0">Every item on the checklist was found in what you provided — successor trustee, revocable/irrevocable wording, spendthrift, distributions, property schedule, accounting, incapacity, compensation, governing law, and termination. That means the language is present; it is <b>not</b> a finding that the trust is valid, funded, or effective. Check each quote above against your original.</p></div>', "innerHTML");
   var totalQ = settlorQ.length + trusteeQ.length + successorQ.length + beneQ.length + canQ.length + cantQ.length + distQ.length;
-  __tunnel.setInnerHTML($('trustCheckOut'), '<b>' + totalQ + ' passages found and shown above</b> across people &amp; roles, trustee powers and limits, and distributions — plus a ' + CHECKS.length + '-item gap check (' + foundCount + ' found, ' + gaps.length + ' not found). Source: “' + esc(title || 'Pasted / uploaded text') + '” · ' + text.length.toLocaleString() + ' characters read. Page numbers come from the PDF page markers stored during extraction; when a location cannot be determined it says <b>page unavailable</b> — a page number is never guessed.', "innerHTML");
+  __tunnel.setInnerHTML($('trustCheckOut'), '<b>' + totalQ + ' passages found and shown above</b> across people &amp; roles, trustee powers and limits, and distributions — plus a ' + CHECKS.length + '-item gap check (' + foundCount + ' found, ' + gaps.length + ' not found). Source: “' + esc(title || 'Pasted / uploaded text') + '” · ' + text.length.toLocaleString() + ' characters read. Page numbers come from the PDF page markers stored during extraction; when a location cannot be determined it says <b>location not available</b> — a page number is never guessed.', "innerHTML");
   $('trustMeta').textContent = 'Reading: ' + (title || 'your trust document') + ' · ' + sentences.length + ' sentences scanned · schedules and amendments included only where present in the text provided.';
   __tunnel.setStyle($('results'), "display", 'none');
   enhanceReading(text, title, 'trust');
@@ -4271,7 +4387,7 @@ function renderPacket() {
     return;
   }
   el.className = 'packet open';
-  __tunnel.setInnerHTML(el, '<p style="margin:0 0 4px;font-weight:700;font-size:13.5px">Your packet — ' + PACKET.length + ' item' + (PACKET.length === 1 ? '' : 's') + ', in the order you selected them. Every file keeps its name; findings trace back to the file they came from.</p>' + PACKET.map(function (it, i) {
+  __tunnel.setInnerHTML(el, '<p style="margin:0 0 4px;font-weight:700;font-size:13.5px">Your packet — ' + PACKET.length + ' item' + (PACKET.length === 1 ? '' : 's') + ', in the order they were added. Every file keeps its name; findings trace back to the file they came from.</p>' + PACKET.map(function (it, i) {
     return '<div class="packet-item"><span class="pn">' + (i + 1) + '</span><span style="flex:1"><b>' + esc(it.name) + '</b> <span class="px">' + esc(it.note) + '</span></span><button class="packet-remove" type="button" data-remove-packet="' + it.id + '" aria-label="Remove ' + esc(it.name) + ' from the packet">Remove</button></div>';
   }).join(''), "innerHTML");
 }
@@ -4299,10 +4415,36 @@ if (packetListEl) packetListEl.addEventListener('click', function (e) {
   var b = e.target && e.target.closest ? e.target.closest('[data-remove-packet]') : null;
   if (!b) return;
   var id = parseInt(b.getAttribute('data-remove-packet'), 10);
+  var removed = null;
+  PACKET.forEach(function (it) {
+    if (it.id === id) removed = it;
+  });
   PACKET = PACKET.filter(function (it) {
     return it.id !== id;
   });
+  if (removed) {
+    for (var hi = 0; hi < FILE_HASHES.length; hi++) {
+      if (FILE_HASHES[hi].name === removed.name) {
+        FILE_HASHES.splice(hi, 1);
+        break;
+      }
+    }
+  }
   renderPacket();
+  if (removed && typeof LAST_READING !== 'undefined' && LAST_READING && LAST_READING.text) {
+    LAST_READING = {
+      text: '',
+      title: '',
+      type: 'doc'
+    };
+    $('pasteBox').value = packetCombinedText();
+    __tunnel.setStyle($('results'), "display", 'none');
+    var tr2 = $('trustResults');
+    if (tr2) __tunnel.setStyle(tr2, "display", 'none');
+    var eb2 = $('exportBar');
+    if (eb2) __tunnel.setStyle(eb2, "display", 'none');
+    toast('Removed ' + removed.name + '. The reading on screen was cleared — run the packet again to get findings for what\u2019s left.');
+  }
 });
 function packetCombinedText() {
   return PACKET.filter(function (it) {
@@ -4330,6 +4472,7 @@ function packetAddText(name, text, note) {
 function handleFiles(files) {
   if (!files || !files.length) return;
   var list = Array.prototype.slice.call(files);
+  if (!PACKET.length) FILE_HASHES = [];
   HANDLE_BATCH = list.length;
   $('fileMeta').textContent = list.length === 1 ? list[0].name + ' · ' + (list[0].size / 1024).toFixed(0) + ' KB' : list.length + ' files added: ' + list.map(function (f) {
     return f.name;
@@ -4340,17 +4483,18 @@ function handleFiles(files) {
     if (pending <= 0) packetAnalyze();
   }
   list.forEach(function (f) {
+    var hashSlot = {
+      name: f.name,
+      hex: null
+    };
+    FILE_HASHES.push(hashSlot);
     if (window.crypto && crypto.subtle && crypto.subtle.digest && f.arrayBuffer) {
       f.arrayBuffer().then(function (buf) {
         return crypto.subtle.digest('SHA-256', buf);
       }).then(function (digest) {
-        var hex = Array.prototype.map.call(new Uint8Array(digest), function (b) {
+        hashSlot.hex = Array.prototype.map.call(new Uint8Array(digest), function (b) {
           return ('0' + b.toString(16)).slice(-2);
         }).join('');
-        FILE_HASHES.push({
-          name: f.name,
-          hex: hex
-        });
       }).catch(function () {}).then(function () {
         done();
       });
@@ -4587,7 +4731,7 @@ function analyzeWW(rawText) {
     if (sent && /does not name|not named|not identified|not disclosed/i.test(sent) && !entity) {
       body = '<div class="notin">Not detected automatically. Check the original.</div><p style="margin:6px 0 0;color:var(--muted);font-size:14.5px">Your document says so itself:</p><blockquote style="font-size:15.5px">' + esc(sent) + '</blockquote>';
     } else if (sent) {
-      body = (entity ? '<div class="entity">' + esc(entity) + '</div>' : '<div class="entity">Named in the quote below</div>') + '<blockquote style="font-size:15.5px">' + esc(sent) + '<span class="pg">' + esc(pageOf(flat, sent, occFor(sent))) + ' · from your document</span></blockquote>';
+      body = (entity ? '<div class="entity">' + esc(entity) + '</div>' : '<div class="entity">Named in the quote below</div>') + '<blockquote style="font-size:15.5px">' + esc(sent) + '<span class="pg">' + esc(pageOf(flat, sent, occFor(sent))) + ' · ' + esc(fromPhrase(flat, sent, occFor(sent))) + '</span></blockquote>';
     } else {
       body = '<div class="notin">Not detected automatically. Check the original.</div><p style="margin:6px 0 0;color:var(--muted);font-size:14.5px">No ' + esc(role.label.toLowerCase()) + ' was detected automatically in the text provided. A differently formatted name can be missed — check the original document, the statement, or the servicer\u2019s site, not a guess here.</p>';
     }
@@ -5012,9 +5156,91 @@ fbRenderList();
       return false;
     }
   }
+  var BACKUP_VERSION = 1;
+  function isPlainObj(v) {
+    return !!v && typeof v === 'object' && !Array.isArray(v);
+  }
+  function cleanStore(k, raw) {
+    var v;
+    try {
+      v = JSON.parse(raw);
+    } catch (e) {
+      return null;
+    }
+    var dropped = 0,
+      i,
+      en;
+    if (k === BT_KEY) {
+      if (!Array.isArray(v)) return null;
+      var bills = [];
+      for (i = 0; i < v.length; i++) {
+        en = v[i];
+        if (!isPlainObj(en)) {
+          dropped++;
+          continue;
+        }
+        if (!isPlainObj(en.notices)) en.notices = btBlankNotices();
+        bills.push(en);
+      }
+      return {
+        str: JSON.stringify(bills),
+        dropped: dropped
+      };
+    }
+    if (k === FB_KEY) {
+      if (!Array.isArray(v)) return null;
+      var reps = [];
+      for (i = 0; i < v.length; i++) {
+        en = v[i];
+        if (!isPlainObj(en)) {
+          dropped++;
+          continue;
+        }
+        reps.push(en);
+      }
+      return {
+        str: JSON.stringify(reps),
+        dropped: dropped
+      };
+    }
+    if (k === RTP_STORE_KEY) {
+      if (!isPlainObj(v)) return null;
+      var out = {};
+      Object.keys(v).forEach(function (key) {
+        var val = v[key];
+        if (key === '__manual') {
+          if (Array.isArray(val)) {
+            out[key] = val.filter(function (en2) {
+              if (isPlainObj(en2)) return true;
+              dropped++;
+              return false;
+            });
+          } else {
+            dropped++;
+          }
+          return;
+        }
+        if (typeof val === 'string') {
+          out[key] = val;
+        } else {
+          dropped++;
+        }
+      });
+      return {
+        str: JSON.stringify(out),
+        dropped: dropped
+      };
+    }
+    return null;
+  }
   if (impInput) impInput.addEventListener('change', function () {
     var f = impInput.files && impInput.files[0];
     if (!f) return;
+    function resetImp() {
+      try {
+        impInput.value = '';
+      } catch (e) {}
+    }
     var r = new FileReader();
     r.onload = function () {
       var payload;
@@ -5023,23 +5249,45 @@ fbRenderList();
       } catch (e) {
         showBackup('That file could not be restored — it is not readable as a backup file (damaged or not JSON). Nothing was changed.');
         toast('Backup file not recognized — nothing was changed.');
+        resetImp();
         return;
       }
       if (!payload || payload.kind !== 'rtp-backup' || !payload.stores || typeof payload.stores !== 'object') {
         showBackup('That file could not be restored — it is not a Read the Paper backup file. Nothing was changed.');
         toast('Backup file not recognized — nothing was changed.');
+        resetImp();
         return;
       }
-      var keys = [RTP_STORE_KEY, BT_KEY, FB_KEY].filter(function (k) {
-        return typeof payload.stores[k] === 'string';
+      if (typeof payload.version !== 'number' || isNaN(payload.version) || payload.version > BACKUP_VERSION) {
+        showBackup('That backup was NOT restored — it is from a newer version of Read the Paper, or its version is not readable. Nothing was changed.');
+        toast('Backup is from a newer version or not readable — nothing was changed.');
+        resetImp();
+        return;
+      }
+      var ALL_KEYS = [RTP_STORE_KEY, BT_KEY, FB_KEY];
+      var named = ALL_KEYS.filter(function (k) {
+        return Object.prototype.hasOwnProperty.call(payload.stores, k);
       });
-      if (!keys.length) {
+      if (!named.length) {
         showBackup('That backup file contains no readable tracker data. Nothing was changed.');
         toast('Backup held no tracker data — nothing was changed.');
+        resetImp();
         return;
       }
-      var bad = keys.filter(function (k) {
-        return !storeShapeOk(k, payload.stores[k]);
+      var keys = ALL_KEYS.filter(function (k) {
+        return typeof payload.stores[k] === 'string';
+      });
+      var cleaned = {},
+        droppedTotal = 0,
+        bad = [];
+      keys.forEach(function (k) {
+        var c = cleanStore(k, payload.stores[k]);
+        if (!c) {
+          bad.push(k);
+          return;
+        }
+        cleaned[k] = c.str;
+        droppedTotal += c.dropped;
       });
       if (bad.length) {
         var badNames = bad.map(function (k) {
@@ -5047,11 +5295,12 @@ fbRenderList();
         }).join(' and ');
         showBackup('That backup file was NOT restored: the data for ' + badNames + ' is damaged or in an unexpected shape, so nothing was written at all. Your current entries are untouched.');
         toast('Backup failed validation — nothing was restored.');
+        resetImp();
         return;
       }
       var prev = {};
       try {
-        keys.forEach(function (k) {
+        ALL_KEYS.forEach(function (k) {
           prev[k] = localStorage.getItem(k);
         });
       } catch (e) {
@@ -5059,13 +5308,16 @@ fbRenderList();
       }
       try {
         keys.forEach(function (k) {
-          localStorage.setItem(k, payload.stores[k]);
+          localStorage.setItem(k, cleaned[k]);
+        });
+        ALL_KEYS.forEach(function (k) {
+          if (keys.indexOf(k) < 0) localStorage.removeItem(k);
         });
       } catch (writeErr) {
         var rolledBack = true;
         if (prev) {
           try {
-            keys.forEach(function (k) {
+            ALL_KEYS.forEach(function (k) {
               if (prev[k] === null) localStorage.removeItem(k);else localStorage.setItem(k, prev[k]);
             });
           } catch (e2) {
@@ -5079,13 +5331,20 @@ fbRenderList();
           showBackup('Restore failed while writing, and the automatic rollback could not be completed — storage on this device is in trouble. Check your trackers before entering anything new, and keep your backup file safe.');
           toast('Restore failed and rollback was incomplete — check your trackers.');
         }
+        resetImp();
         return;
       }
-      showBackup('Backup restored from ' + f.name + ' · ' + new Date().toLocaleString() + '. Reloading your saved entries…');
+      showBackup('Backup restored from ' + f.name + ' · ' + new Date().toLocaleString() + (droppedTotal ? ' · ' + droppedTotal + ' damaged entr' + (droppedTotal === 1 ? 'y was' : 'ies were') + ' left out — everything else restored.' : '') + ' Reloading your saved entries…');
       toast('Backup restored — reloading your entries.');
+      resetImp();
       setTimeout(function () {
         location.reload();
       }, 900);
+    };
+    r.onerror = function () {
+      showBackup('That file could not be read at all — nothing was changed.');
+      toast('Backup file could not be read — nothing was changed.');
+      resetImp();
     };
     r.readAsText(f);
   });
@@ -5786,27 +6045,43 @@ function buildSourceViewer(el, text, store) {
   var paras = text.split(/\n/).map(flatNorm).filter(function (p) {
     return p.length;
   });
-  __tunnel.setInnerHTML(el, paras.map(function (p, i) {
+  var curSrc = null,
+    curPage = null,
+    html = [];
+  paras.forEach(function (p) {
+    var only = /^\[Source: ([^\]]+)\]\s*$/.exec(p);
+    if (only) {
+      curSrc = only[1];
+      curPage = null;
+      return;
+    }
     var pg = '',
       body = p;
-    var pm = /^\[Page (\d+)\]\s*/.exec(p);
+    var pm = /^\[Page (\d+)\]\s*/.exec(body);
     if (pm) {
       pg = '<span class="src-pg">Page ' + pm[1] + '</span>';
-      body = p.slice(pm[0].length);
+      body = body.slice(pm[0].length);
     }
     var sm = /^\[Source: ([^\]]+)\]\s*/.exec(body);
     if (sm) {
+      if (sm[1] !== curSrc) {
+        curSrc = sm[1];
+        curPage = null;
+      }
       pg += '<span class="src-pg">From: ' + esc(sm[1]) + '</span>';
       body = body.slice(sm[0].length);
     }
+    if (pm) curPage = pm[1];
+    var idx = store.length;
     store.push({
       flat: body,
-      page: pm ? pm[1] : null,
-      src: sm ? sm[1] : null,
+      page: curPage,
+      src: curSrc,
       nm: normWithMap(body)
     });
-    return '<p data-src="' + i + '">' + pg + '<span class="src-body">' + esc(body) + '</span></p>';
-  }).join(''), "innerHTML");
+    html.push('<p data-src="' + idx + '">' + pg + '<span class="src-body">' + esc(body) + '</span></p>');
+  });
+  __tunnel.setInnerHTML(el, html.join(''), "innerHTML");
 }
 function buildLocIndex(text, store) {
   var idx = {};
@@ -5899,10 +6174,11 @@ function sourceFileFor(quote, loc) {
   });
   if (docs.length < 2 || !packetMatches(LAST_READING.text)) return null;
   var q = normMatch(quote).slice(0, 50);
+  var matches = [];
   for (var i = 0; i < docs.length; i++) {
-    if (normMatch(docs[i].text).indexOf(q) >= 0) return docs[i].name;
+    if (normMatch(docs[i].text).indexOf(q) >= 0) matches.push(docs[i].name);
   }
-  return null;
+  return matches.length === 1 ? matches[0] : null;
 }
 function addJumpButtons(scopeEl, viewEl, store) {
   if (!scopeEl || !viewEl) return;
@@ -5998,12 +6274,12 @@ function buildTimeline(text, sentences) {
     if (/(lender|company|bank|landlord|provider|employer|servicer)\s+(may|can|shall have)/i.test(s) || /at (its|their) sole discretion/i.test(s) || /without (your|the borrower|the tenant|borrower\u2019s|tenant\u2019s) consent/i.test(s)) f.push('<span class="flag one">One-sided</span>');
     return f.join('');
   }
-  var dateRe = /(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}|\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/;
+  var dateRe = makeDateRe(false);
   sentences.forEach(function (s) {
     var dm = dateRe.exec(s);
     if (dm) {
-      var d = new Date(dm[0]);
-      if (!isNaN(d.getTime())) {
+      var d = parseDateText(dm[0]);
+      if (d) {
         var k = dm[0] + s.slice(0, 40);
         if (!seenEv[k]) {
           seenEv[k] = 1;
@@ -6182,7 +6458,7 @@ function buildTrustDepth(text, sentences) {
   var ascQ = find(/ascertainable standard/i);
   function row(label, badge, badgeCls, note, quotes) {
     return '<div class="depth-row"><div class="d-label">' + esc(label) + '<br><span class="badge ' + badgeCls + '">' + esc(badge) + '</span></div><div style="flex:1"><p style="margin:0;color:var(--muted);font-size:14.5px">' + note + '</p>' + quotes.slice(0, 2).map(function (q) {
-      return '<blockquote style="font-size:15.5px">' + esc(q) + '<span class="pg">' + esc(pageOf(text, q, occFor(q))) + ' · from your document</span></blockquote>';
+      return '<blockquote style="font-size:15.5px">' + esc(q) + '<span class="pg">' + esc(pageOf(text, q, occFor(q))) + ' · ' + esc(fromPhrase(text, q, occFor(q))) + '</span></blockquote>';
     }).join('') + '</div></div>';
   }
   var revBadge = revQ.length && irrevQ.length ? 'Both appear' : revQ.length ? 'Revocable' : irrevQ.length ? 'Irrevocable' : 'Not in document';
