@@ -165,6 +165,15 @@
   .test-box ol{margin:0 0 18px;padding-left:22px;color:#eef1f8}
   .test-box ol li{margin-bottom:8px;line-height:1.55}
   .test-box .btn-gold{box-shadow:none}
+  .price-line{margin:16px 0 0;font-size:16.5px;color:var(--ink-soft)}
+  .price-line strong{color:var(--ink)}
+  .demo{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:22px}
+  .demo-col{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:20px}
+  .demo-col .num{font-family:"Archivo",sans-serif;font-weight:800;font-size:13px;letter-spacing:.12em;color:var(--gold);text-transform:uppercase}
+  .demo-col blockquote{margin:10px 0;font-style:italic;color:var(--ink)}
+  .demo-col p{margin:10px 0 0;font-size:15.5px;color:var(--ink-soft);line-height:1.55}
+  .demo-col .demo-note{font-size:14px;color:var(--ink-faint)}
+  @media (max-width:860px){ .demo{grid-template-columns:1fr} }
 
   .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:22px}
   @media (max-width:760px){ .steps{grid-template-columns:1fr} }
@@ -210,8 +219,8 @@
     <a class="brand" href="#top" data-nav="home"><span class="dot" aria-hidden="true"></span>Read the Paper</a>
     <nav class="nav" aria-label="Site">
       <a href="#how" data-nav="home-anchor">How it works</a>
-      <a href="#privacy" data-nav="privacy">Privacy Policy</a>
-      <a class="cta-nav" href="https://muse.ai/s/contract-reader-zxb6xmpxexbxcxt3z/kcde2S5FQnid-BwIK0DfR506DNxeSjICbrFCZckKftg" target="_blank" rel="noopener">Try Read the Paper</a>
+      <a href="privacy.html">Privacy Policy</a>
+      <a class="cta-nav" href="app.html">Try Read the Paper</a>
     </nav>
   </div>
 </header>
@@ -230,9 +239,10 @@
         <div>
           <p class="lead">Are y'all tired of signing things and getting notices about stuff you didn't understand — or didn't even know you signed?</p>
           <div class="cta-row" style="margin-top:20px">
-            <a class="btn btn-gold" href="https://muse.ai/s/contract-reader-zxb6xmpxexbxcxt3z/kcde2S5FQnid-BwIK0DfR506DNxeSjICbrFCZckKftg" target="_blank" rel="noopener">Try Read the Paper →</a>
+            <a class="btn btn-gold" href="app.html">Try Read the Paper →</a>
             <a class="btn btn-ghost" href="#how">See how it works</a>
           </div>
+          <p class="price-line"><strong>What does it cost?</strong> Nothing right now — it's free while it's in testing. When it launches, there'll be paid offers — a Founding offer and a Case Pass — but trying it today costs you zero.</p>
           <p class="fb-note"><strong>Opening it from Facebook?</strong> If Facebook says it can't load the link, tap the ⋯ up top and open in Chrome — that's Facebook being Facebook, not the app.</p>
         </div>
         <div class="hero-side">
@@ -241,6 +251,46 @@
         </div>
       </div>
     </div>
+
+    <section class="block" style="padding-top:28px" aria-labelledby="test-top-title">
+      <div class="test-box">
+        <p class="kicker" style="color:var(--gold-bright)">Prove it yourself</p>
+        <h2 id="test-top-title">The airplane-mode test</h2>
+        <p>Everybody says "private" now. Don't take my word for it — run the check with your own two hands:</p>
+        <ol>
+          <li>Open Read the Paper and let it load once.</li>
+          <li>Put your phone in <strong>airplane mode</strong>.</li>
+          <li>Run a paper through it.</li>
+        </ol>
+        <p>If it still works with the radios off, nothing needed to leave your phone to do it. That's not a promise — that's proof you checked yourself.</p>
+        <a class="btn btn-gold" href="app.html">Open the app and run the test →</a>
+      </div>
+    </section>
+
+    <section class="block" aria-labelledby="demo-title">
+      <p class="kicker">See it work first</p>
+      <h2 class="title" id="demo-title">Here's what it does</h2>
+      <p class="big" style="font-size:19px">This is the sample bill built right into the app — City Power &amp; Water, customer "J. Sample," 12 Example Street. Made up on purpose. Your paper never has to touch a thing for you to see what the app does with a clause like this one:</p>
+      <div class="demo">
+        <div class="demo-col">
+          <span class="num">What the paper says</span>
+          <blockquote>"If payment is received after the Due Date, a late fee of $15 and interest of 1.5% per month on the unpaid balance will apply."</blockquote>
+          <p class="demo-note">Off the sample bill — total due $186.42, due date December 2, 2026.</p>
+        </div>
+        <div class="demo-col">
+          <span class="num">In plain English</span>
+          <p>Pay late and two things hit you: a flat $15 fee, right away — and then 1.5% interest <em>every month</em> on whatever you still owe. That interest works out to about 18% a year, and it keeps ticking until the bill is paid off.</p>
+        </div>
+        <div class="demo-col">
+          <span class="num">What to watch</span>
+          <p>The whole clause hangs on one date — December 2. The stub at the bottom says it flat out: "The stub alone is not payment," so mailing the coupon without the money doesn't count. And the top half tells you to keep it date-stamped when you pay, because that's your proof. The paper tells on itself — if you read it.</p>
+        </div>
+      </div>
+      <div class="cta-row" style="margin-top:20px">
+        <a class="btn btn-gold" href="app.html">Run the sample in the app →</a>
+        <a class="btn btn-ghost" href="#how">How it works</a>
+      </div>
+    </section>
 
     <hr class="rule" />
 
@@ -319,17 +369,10 @@
       </div>
     </section>
 
-    <section class="block" style="padding-top:6px" aria-labelledby="test-title">
-      <div class="test-box">
-        <h2 id="test-title">Don't take my word for it. Test it.</h2>
-        <p>People say "private" about everything now. So don't believe the word — run the check:</p>
-        <ol>
-          <li>Open Read the Paper and let it load once.</li>
-          <li>Put your phone in <strong>airplane mode</strong>.</li>
-          <li>Run a paper through it.</li>
-        </ol>
-        <p>If it still works with the radios off, nothing needed to leave your phone to do it. That's proof you can check with your own two hands.</p>
-        <a class="btn btn-gold" href="https://muse.ai/s/contract-reader-zxb6xmpxexbxcxt3z/kcde2S5FQnid-BwIK0DfR506DNxeSjICbrFCZckKftg" target="_blank" rel="noopener">Try Read the Paper →</a>
+    <section class="block" aria-labelledby="who-title">
+      <h2 class="title" id="who-title" style="font-size:24px">Who built this</h2>
+      <div class="guarantee">
+        <p style="margin:0"><strong>I'm Nate.</strong> I'm in Cleveland, Tennessee. I built this because a notice showed up — pages of micro print I couldn't make heads or tails of — and I got tired of signing things I didn't understand. So I built the thing I needed. If you're tired of it too, it's here.</p>
       </div>
     </section>
 
@@ -354,8 +397,8 @@
         <h3>Get in touch</h3>
         <ul class="foot-links">
           <li><a href="mailto:folditforwardtrust@gmail.com">folditforwardtrust@gmail.com</a></li>
-          <li><a href="#privacy" data-nav="privacy">Privacy Policy</a></li>
-          <li><a href="https://muse.ai/s/contract-reader-zxb6xmpxexbxcxt3z/kcde2S5FQnid-BwIK0DfR506DNxeSjICbrFCZckKftg" target="_blank" rel="noopener">Open the app</a></li>
+          <li><a href="privacy.html">Privacy Policy</a></li>
+          <li><a href="app.html">Open the app</a></li>
         </ul>
       </div>
     </div>
@@ -366,81 +409,9 @@
 </footer>
 </div>
 
-<!-- ==================== PRIVACY VIEW ==================== -->
-<div class="view" id="view-privacy">
-<main>
-  <div class="wrap">
-    <article class="policy">
-      <a class="backlink" href="#top" data-nav="home">← Back to Read the Paper</a>
-      <h1>Privacy Policy — Read the Paper</h1>
-      <p class="updated">Last updated: November 22, 2026</p>
-
-      <p>This is the privacy policy for <strong>Read the Paper</strong>, in plain English — same as everything else around here. The short version: <strong>the app runs on your device, your papers stay on your device, and there is nothing collecting anything about you.</strong> The long version is below, and it's not much longer.</p>
-
-      <div class="callout">
-        <p style="margin:0"><strong>The whole policy in one line:</strong> No account. No sign-up. No uploads. No analytics. No ads. No tracking. No selling or sharing your data — because the app never gets your data in the first place.</p>
-      </div>
-
-      <h2>How the app works</h2>
-      <p>Read the Paper runs entirely on your device, in your browser. When you open a document or a photo of a document in the app, it is processed right there on your device. Nothing you open is uploaded to a server — there is no server for it to go to. That's why the app works in airplane mode, and you can test that yourself: load it once, turn airplane mode on, and run a paper through it.</p>
-
-      <h2>What we collect</h2>
-      <p><strong>Nothing.</strong> The app does not collect, transmit, or store on any server:</p>
-      <ul>
-        <li>The documents, bills, contracts, or photos you open in the app</li>
-        <li>Your name, email address, or any account information — there are no accounts</li>
-        <li>Your location</li>
-        <li>Usage data, analytics, or device identifiers</li>
-      </ul>
-
-      <h2>What stays on your device</h2>
-      <p>Some things you do inside the app — for example, entries you type into the bills tracker — are saved only in your own browser's local storage, on your own device, so they're still there when you come back. That storage never leaves your device and is never sent anywhere. The app includes a wipe / clear control that deletes everything the app has saved locally. Clearing your browser's site data also removes it.</p>
-
-      <h2>Advertising, analytics, and tracking</h2>
-      <p>Read the Paper has <strong>no advertising, no analytics, and no tracking</strong>. There are no ad networks, no trackers, and no third-party services watching what you do in the app.</p>
-
-      <h2>Sharing your information</h2>
-      <p>We do not share your personal information with third parties, because we do not receive your personal information. There is nothing to share, sell, or hand over.</p>
-
-      <h2>Children's privacy</h2>
-      <p>Because the app collects no personal information from anyone, it collects none from children either.</p>
-
-      <h2>Changes to this policy</h2>
-      <p>If how the app handles information ever changes, this page will be updated and the date at the top will change with it. The version posted here is the one that applies.</p>
-
-      <h2>Contact</h2>
-      <p>Questions about this policy or about privacy in Read the Paper:</p>
-      <p><a href="mailto:folditforwardtrust@gmail.com"><strong>folditforwardtrust@gmail.com</strong></a></p>
-
-      <p style="margin-top:28px"><a class="backlink" href="#top" data-nav="home">← Back to Read the Paper</a></p>
-    </article>
-  </div>
-</main>
-
-<footer>
-  <div class="wrap">
-    <div class="fineprint" style="border-top:none;padding-top:22px">
-      Read the Paper · Support: <a href="mailto:folditforwardtrust@gmail.com">folditforwardtrust@gmail.com</a> · Instagram &amp; Threads: @followthepaper101
-    </div>
-  </div>
-</footer>
-</div>
-
 <script>
 (function(){
-  var home = document.getElementById('view-home');
-  var privacy = document.getElementById('view-privacy');
-  function render(){
-    var isPrivacy = window.location.hash === '#privacy';
-    home.classList.toggle('active', !isPrivacy);
-    privacy.classList.toggle('active', isPrivacy);
-    document.title = isPrivacy
-      ? 'Privacy Policy — Read the Paper'
-      : 'Read the Paper — What does that contract actually say?';
-    if (isPrivacy) { window.scrollTo(0,0); }
-  }
-  window.addEventListener('hashchange', render);
-  render();
+  if (window.location.hash === '#privacy') { window.location.replace('privacy.html'); }
 })();
 </script>
 </body>
