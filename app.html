@@ -412,6 +412,12 @@ textarea.tpl{width:100%;min-height:230px;border:1px solid var(--line);border-rad
 .gap-state.missing{background:var(--surface2);color:var(--ink);border:1.5px dashed var(--amber)}
 .gap-state.found{background:var(--green-bg);color:var(--green);border-color:var(--green)}
 
+/* ---------- What isn't in here (missing-clauses checklist) ---------- */
+.miss-item{margin:10px 0;padding:10px 0 2px;border-top:1px solid var(--line)}
+.miss-item:first-of-type{border-top:none}
+.miss-done{margin:3px 0 0;color:var(--muted);font-size:14.5px}
+.miss-ask{margin:3px 0 0;font-size:14.5px;font-weight:600}
+
 /* ---------- Instrument check banners ---------- */
 .inst-banner{margin:12px 0;padding:13px 15px;border-radius:var(--radius);background:var(--amber-bg);border:1.5px solid var(--amber);font-size:15px;line-height:1.55;color:var(--ink)}
 .inst-banner.danger{background:var(--red-bg);border-color:var(--red)}
@@ -573,6 +579,7 @@ table.oblig td,table.oblig th{border-top:1px solid var(--line);padding:8px 6px;t
       <h2>5 · Gaps, language &amp; dates</h2>
       <p class="sub">What a document like this should say — checked against what yours actually says. “Not detected automatically” means the reader could not identify it; absence has not been established. Plus cross-references to documents you may not have, blank fields, and every date detected — a detected date is not a confirmed deadline, and only dates you confirm become calendar reminders.</p>
       <div id="gapsOut"></div>
+      <div id="missingOut"></div>
       <div id="xrefOut"></div>
       <div id="blankOut"></div>
       <div id="obligOut"></div>
@@ -3923,6 +3930,227 @@ function inferGapChecks(text) {
     supportSignals: supportSig
   };
 }
+var MISSING_GENERAL = [{
+  id: 'govlaw',
+  name: 'Governing law',
+  done: 'This names the state whose law decides fights over the paper.',
+  ask: 'Ask in writing: which state\u2019s law governs this agreement?',
+  re: /governed by the laws of|governing law|laws of the state of|under the laws of/i
+}, {
+  id: 'notices',
+  name: 'Notices',
+  done: 'This says how and where formal notices have to be sent to count.',
+  ask: 'Ask in writing: where and how must notices be sent?',
+  re: /\ball notices\b|\bnotices?\s+(must|shall)\b|\bnotice in writing\b|\bwritten notice\b/i
+}, {
+  id: 'assign',
+  name: 'Assignment limits',
+  done: 'This limits whether either side can hand the agreement to somebody else.',
+  ask: 'Ask in writing: can either side assign this agreement, and are there limits?',
+  re: /\bassign/i
+}, {
+  id: 'amend',
+  name: 'Amendment',
+  done: 'This says whether the terms can be changed and whether your written OK is needed.',
+  ask: 'Ask in writing: how can these terms be changed, and does it need my written agreement?',
+  re: /\bamend|\bmodif|change (the|these|any) terms/i
+}, {
+  id: 'term',
+  name: 'Termination',
+  done: 'This says how you or they can end the agreement.',
+  ask: 'Ask in writing: how can this agreement be terminated, by either side?',
+  re: /terminat/i
+}, {
+  id: 'dispute',
+  name: 'Dispute path',
+  done: 'This says where a fight over the paper gets heard \u2014 court, arbitration, or somewhere else.',
+  ask: 'Ask in writing: where and how are disputes under this agreement handled?',
+  re: /arbitrat|\bcourt\b|jurisdiction|venue/i
+}];
+var MISSING_LOAN = [{
+  id: 'cure',
+  name: 'Right to cure before acceleration',
+  done: 'This would give you a set window to catch up before the whole balance comes due at once.',
+  ask: 'Ask in writing: is there a right to cure a default before the balance is accelerated, and how long is it?',
+  re: /\bright to cure\b|\bopportunity to cure\b|\bcure period\b|\bdays to cure\b|\bcure\b[^.]{0,40}\bdefault\b|\bdays?\b[^.]{0,30}\bto cure\b/i
+}, {
+  id: 'curelen',
+  name: 'Cure period length',
+  done: 'This puts a number of days on the window to fix a default.',
+  ask: 'Ask in writing: how many days is the cure period?',
+  re: null
+}, {
+  id: 'liabcap',
+  name: 'Liability cap',
+  done: 'This would cap what they can collect beyond the amount owed.',
+  ask: 'Ask in writing: is there any cap on amounts collectible beyond the balance?',
+  re: /\bin no event\b|liability[^.]{0,50}(not exceed|limited to|cap)|cap[^.]{0,40}(liability|damages|amounts)/i
+}, {
+  id: 'prepay',
+  name: 'Prepayment terms',
+  done: 'This says whether paying early costs you a penalty or not.',
+  ask: 'Ask in writing: is there a prepayment penalty, and if so how is it figured?',
+  re: /prepay/i
+}, {
+  id: 'ratecap',
+  name: 'Rate cap',
+  done: 'This would state the highest rate that can be charged.',
+  ask: 'Ask in writing: is there a maximum rate or rate ceiling, and what is it?',
+  re: /maximum rate|rate cap|highest lawful rate|usury|(interest|rate)[^.]{0,50}not exceed|not exceed[^.]{0,50}(interest|rate)/i
+}];
+var MISSING_LEASE = [{
+  id: 'leasecure',
+  name: 'Right to cure before eviction',
+  done: 'This would give you a window to fix a problem before eviction steps start.',
+  ask: 'Ask in writing: is there a right to cure a lease default before eviction, and how long is it?',
+  re: /\bright to cure\b|\bopportunity to cure\b|\bcure period\b|\bdays to cure\b|\bcure\b[^.]{0,40}\b(default|breach|violation)\b|\bdays?\b[^.]{0,30}\bto cure\b/i
+}, {
+  id: 'entry',
+  name: 'Entry notice',
+  done: 'This says how much notice you get before the landlord comes in.',
+  ask: 'Ask in writing: how much notice is required before entry?',
+  re: /enter the premises|landlord[^.]{0,80}(enter|entry)|(entry|enter)[^.]{0,60}(notice|\d+\s*hours)/i
+}, {
+  id: 'renewal',
+  name: 'Renewal terms',
+  done: 'This says what happens when the term ends \u2014 renews on its own, by agreement, or not at all.',
+  ask: 'Ask in writing: what are the renewal terms at the end of the lease?',
+  re: /renew/i
+}, {
+  id: 'deposit',
+  name: 'Deposit return deadline',
+  done: 'This puts a deadline on getting your deposit back.',
+  ask: 'Ask in writing: by when must the deposit be returned?',
+  re: /deposit[^.]{0,70}(return|refund|\d+\s*days)|(return|refund)[^.]{0,40}deposit/i
+}];
+var MISSING_BILL = [{
+  id: 'dispwindow',
+  name: 'Dispute window',
+  done: 'This says how long you have to dispute a charge before it stands.',
+  ask: 'Ask in writing: how long do I have to dispute a charge?',
+  re: /disput[^.]{0,70}\d+\s*days|\d+\s*days[^.]{0,70}disput/i
+}, {
+  id: 'disphow',
+  name: 'How to dispute',
+  done: 'This tells you exactly where a dispute has to go to count.',
+  ask: 'Ask in writing: where and how do I send a dispute?',
+  re: /disput[^.]{0,90}(write to|call|address|mail|send|contact)|to dispute[^.]{0,70}(write|call|contact|send)/i
+}, {
+  id: 'latecap',
+  name: 'Late-fee cap',
+  done: 'This would cap how high a late fee can go.',
+  ask: 'Ask in writing: is there a cap on late fees, and what is it?',
+  re: /late (fee|charge)[^.]{0,70}(not exceed|maximum|cap|no more than)|(not exceed|maximum|cap)[^.]{0,50}late (fee|charge)/i
+}];
+var LAST_MISSING = null;
+function missingTracedFound(flatText, sentences, occArr, re) {
+  var hasMarkers = /\[Source: [^\]]+\]/.test(flatText);
+  for (var i = 0; i < sentences.length; i++) {
+    if (!re.test(sentences[i])) continue;
+    var idx = findNeedleIndex(flatText, sentences[i], occArr[i]);
+    if (idx < 0) continue;
+    if (hasMarkers && !segmentFor(flatText, idx).doc) continue;
+    return true;
+  }
+  return false;
+}
+function computeMissingClauses(text, sentences, g) {
+  var flatText = text.replace(/\s+/g, ' ');
+  var isBill = /(amount due|total due|balance due|remittance|invoice)/i.test(text) && /\$\s?[\d,]+/.test(text);
+  var lists = [MISSING_GENERAL];
+  if (g.type === 'loan / credit') lists.push(MISSING_LOAN);
+  if (g.type === 'lease') lists.push(MISSING_LEASE);
+  if (isBill) lists.push(MISSING_BILL);
+  var typeIdentified = g.type !== 'contract' || isBill;
+  var allItems = [];
+  lists.forEach(function (l) {
+    l.forEach(function (it) {
+      allItems.push(it);
+    });
+  });
+  var reasons = [];
+  var wordCount = (text.match(/\S+/g) || []).length;
+  if (text.length < 700 || wordCount < 120) reasons.push('What you gave it looks like a fragment \u2014 too short to search the whole document honestly, so these clauses could not be checked instead of being called missing.');
+  if (packetMatches(text)) {
+    var lowOcr = false,
+      incomplete = false;
+    PACKET.forEach(function (it) {
+      var om = /average OCR confidence (\d+)%/.exec(it.note || '');
+      if (om && parseInt(om[1], 10) < 70) lowOcr = true;
+      if (!it.text || it.pending) incomplete = true;
+    });
+    if (lowOcr) reasons.push('Part of this packet was read by OCR with average confidence under 70%, so words may be missing from the text that was searched.');
+    if (incomplete) reasons.push('Part of the packet gave no readable text, so what was searched is not the whole packet.');
+  }
+  if (reasons.length) return {
+    notFound: [],
+    couldnt: allItems,
+    reasons: reasons,
+    typeIdentified: typeIdentified
+  };
+  var occArr = [],
+    sentSeen = {};
+  sentences.forEach(function (s) {
+    var k = s.replace(/\s+/g, ' ').trim().slice(0, 80);
+    var o = sentSeen[k] || 0;
+    sentSeen[k] = o + 1;
+    occArr.push(o);
+  });
+  var state = {};
+  allItems.forEach(function (it) {
+    if (it.id === 'curelen') return;
+    state[it.id] = missingTracedFound(flatText, sentences, occArr, it.re) ? 'found' : 'notfound';
+  });
+  if (state.cure !== undefined) {
+    if (state.cure !== 'found') state.curelen = state.cure;else {
+      var daysRe = /\b(\d{1,3}|one|two|three|four|five|seven|ten|fourteen|fifteen|twenty|thirty|forty|sixty|ninety)\b[^.]{0,14}\bdays?\b|\b\d+\s*\(\d+\)\s*days?\b/i;
+      var cureItem = null;
+      MISSING_LOAN.forEach(function (it) {
+        if (it.id === 'cure') cureItem = it;
+      });
+      var lenFound = false;
+      for (var ci = 0; ci < sentences.length && !lenFound; ci++) {
+        if (!cureItem.re.test(sentences[ci])) continue;
+        if (daysRe.test(sentences[ci])) lenFound = true;else if (ci + 1 < sentences.length && daysRe.test(sentences[ci + 1])) lenFound = true;
+      }
+      state.curelen = lenFound ? 'found' : 'notfound';
+    }
+  }
+  var notFound = allItems.filter(function (it) {
+    return state[it.id] === 'notfound';
+  });
+  return {
+    notFound: notFound,
+    couldnt: [],
+    reasons: [],
+    typeIdentified: typeIdentified
+  };
+}
+function renderMissingClauses(text, sentences, g) {
+  var el = $('missingOut');
+  if (!el) return;
+  var r = computeMissingClauses(text, sentences, g);
+  LAST_MISSING = r;
+  var h = '<div class="card"><h3>What isn\u2019t in here</h3>' + '<p style="margin:0;color:var(--muted);font-size:14.5px">This is a checklist of clauses documents like this commonly state \u2014 not every clause a document could have, so a clause that is not on this list says nothing either way. A clause that was found is not listed here: it is in the findings above, with its quote and location. Checked against the text of this reading \u2014 the reading\u2019s text fingerprint is in the line at the top of these results.</p>';
+  if (!r.typeIdentified) h += '<p style="margin:8px 0 0;font-size:14.5px">The type of this document wasn\u2019t identified, so only the general list was checked \u2014 the loan, lease, and bill lists couldn\u2019t be checked.</p>';
+  if (r.notFound.length) {
+    h += '<h4 style="margin:16px 0 2px">Not found in what you gave it</h4>' + '<p style="margin:0 0 4px;color:var(--muted);font-size:13.5px">Searched for in the text you gave it and not found there. That is a statement about what you gave it \u2014 not a claim about pages you didn\u2019t include.</p>' + r.notFound.map(function (it) {
+      return '<div class="miss-item"><b>' + esc(it.name) + '</b><p class="miss-done">' + esc(it.done) + '</p><p class="miss-ask">' + esc(it.ask) + '</p></div>';
+    }).join('');
+  }
+  if (r.couldnt.length) {
+    h += '<h4 style="margin:16px 0 2px">Couldn\u2019t check</h4>' + r.reasons.map(function (x) {
+      return '<p style="margin:0 0 4px;color:var(--muted);font-size:13.5px">' + esc(x) + '</p>';
+    }).join('') + r.couldnt.map(function (it) {
+      return '<div class="miss-item"><b>' + esc(it.name) + '</b><p class="miss-done">' + esc(it.done) + '</p><p class="miss-ask">' + esc(it.ask) + '</p></div>';
+    }).join('');
+  }
+  if (!r.notFound.length && !r.couldnt.length) {
+    h += '<p style="margin:10px 0 0">Every clause on the checklist for a document like this was found in what you gave it \u2014 each one is quoted in the findings above. That is a statement about detection, not verification.</p>';
+  }
+  h += '</div>';
+  __tunnel.setInnerHTML(el, h, "innerHTML");
+}
 var LAST_DEADLINES = [];
 var LAST_POWER_SENTS = 0;
 function renderExtraAnalysis(text, sentences) {
@@ -3946,6 +4174,7 @@ function renderExtraAnalysis(text, sentences) {
   }).map(function (r) {
     return esc(r.label);
   }).join(' · ') + '</p>' : '') + '</div>', "innerHTML");
+  renderMissingClauses(text, sentences, g);
   var powerPhrases = ['may change', 'may modify', 'sole discretion', 'without notice', 'waives', 'waive', 'accelerat', 'binding arbitration', 'class action', 'reserves the right', 'at any time', 'immediately due', 'good-faith determination'];
   var low = normMatch(text);
   var work = low;
